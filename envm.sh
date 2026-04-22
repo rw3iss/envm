@@ -464,5 +464,14 @@ _envm_bootstrap() {
             [ -f "$path" ] && . "$path" 2>/dev/null
         done < "$_ENVM_LOADED"
     fi
+    # Prune orphan snapshots (ids with no matching entry in loaded list)
+    if [ -d "$_ENVM_SNAPSHOTS" ]; then
+        local snap snap_id
+        for snap in "$_ENVM_SNAPSHOTS"/*.env; do
+            [ -f "$snap" ] || continue
+            snap_id=$(basename "$snap" .env)
+            _envm_ns_exists "$snap_id" || rm -f "$snap"
+        done
+    fi
 }
 _envm_bootstrap

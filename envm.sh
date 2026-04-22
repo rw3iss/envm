@@ -59,7 +59,7 @@ _envm_setup() {
 }
 
 # ---------- Namespace registry helpers (pure-shell — no coreutils needed) ----------
-# These run in the bootstrap _envm_p, so they must not depend on grep/awk/sed/mv/rm
+# These run in the bootstrap path, so they must not depend on grep/awk/sed/mv/rm
 # in case the user's PATH is temporarily missing /usr/bin on shell start.
 _envm_ns_exists() {
     [ -f "$_ENVM_LOADED" ] || return 1
@@ -120,7 +120,7 @@ _envm_infer_id() {
     fi
 }
 
-# Pure-shell file copy (no cp needed on bootstrap _envm_p)
+# Pure-shell file copy (no cp needed on bootstrap path)
 _envm_snapshot_save() {
     [ -f "$2" ] || return
     local _l
@@ -469,8 +469,8 @@ envm — multi-namespace environment variable manager
   envm -e <id> KEY [VALUE]   show/set in a specific namespace
   envm -d KEY                delete KEY from default namespace
   envm -d -e <id> KEY        delete KEY from a specific namespace
-  envm load <_envm_p>           load a .env file as a new namespace
-  envm load <_envm_p> --as <id> load with an explicit namespace id
+  envm load <file>           load a .env file as a new namespace
+  envm load <file> --as <id> load with an explicit namespace id
   envm unload                unload the default namespace
   envm unload -e <id>        unload a specific namespace
   envm -h                    show this help
@@ -478,7 +478,7 @@ envm — multi-namespace environment variable manager
 
 Default .env:   $_ENVM_FILE
 State dir:      $_ENVM_STATE
-Override dir:   ENVM_DIR=/some/_envm_p envm ...
+Override dir:   ENVM_DIR=/some/path envm ...
 
 https://github.com/rw3iss/envm
 EOF

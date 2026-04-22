@@ -44,8 +44,8 @@ envm KEY VALUE             set KEY=VALUE in default namespace
 envm -e <id> KEY [VALUE]   show/set in a specific namespace
 envm -d KEY                delete KEY from default namespace
 envm -d -e <id> KEY        delete KEY from a specific namespace
-envm load <path>           load a .env file as a new namespace
-envm load <path> --as <id> load with an explicit namespace id
+envm load <file>           load a .env file as a new namespace
+envm load <file> --as <id> load with an explicit namespace id
 envm unload                unload the default namespace
 envm unload -e <id>        unload a specific namespace
 envm -h                    show help

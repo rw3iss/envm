@@ -2,8 +2,20 @@
 # Source this file in your shell rc to define the `envm` function.
 # https://github.com/rw3iss/envm
 
+# Ensure core GNU utilities (grep, sed, awk, cut, tr) are reachable even if
+# the user's PATH has been mangled or the shell's command hash is stale.
+case ":$PATH:" in *:/usr/bin:*) ;; *) PATH="/usr/bin:$PATH" ;; esac
+case ":$PATH:" in *:/bin:*)     ;; *) PATH="/bin:$PATH"     ;; esac
+export PATH
+
 # ---------- Setup (called on every invocation) ----------
 _envm_setup() {
+    # Rebuild command hash table in case it's stale from a previous shell state
+    if [ -n "$ZSH_VERSION" ]; then
+        rehash 2>/dev/null
+    else
+        hash -r 2>/dev/null
+    fi
     local config="$HOME/.envm/config"
     local dir=""
     if [ -n "${ENVM_DIR:-}" ]; then

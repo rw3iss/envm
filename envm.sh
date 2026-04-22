@@ -59,7 +59,7 @@ _envm_setup() {
 }
 
 # ---------- Namespace registry helpers (pure-shell — no coreutils needed) ----------
-# These run in the bootstrap path, so they must not depend on grep/awk/sed/mv/rm
+# These run in the bootstrap _envm_p, so they must not depend on grep/awk/sed/mv/rm
 # in case the user's PATH is temporarily missing /usr/bin on shell start.
 _envm_ns_exists() {
     [ -f "$_ENVM_LOADED" ] || return 1
@@ -104,23 +104,23 @@ _envm_ns_remove() {
 }
 
 _envm_infer_id() {
-    local path="$1"
+    local _envm_p="$1"
     local abs
-    abs=$(cd "$(dirname "$path")" 2>/dev/null && pwd)/$(basename "$path")
+    abs=$(cd "$(dirname "$_envm_p")" 2>/dev/null && pwd)/$(basename "$_envm_p")
     # If this is the default ENVM_DIR/.env, always use "default"
     if [ "$abs" = "$_ENVM_FILE" ]; then
         echo "default"; return
     fi
     local base
-    base=$(basename "$path")
+    base=$(basename "$_envm_p")
     if [ "$base" = ".env" ]; then
-        basename "$(cd "$(dirname "$path")" 2>/dev/null && pwd)"
+        basename "$(cd "$(dirname "$_envm_p")" 2>/dev/null && pwd)"
     else
         echo "${base%.env}"
     fi
 }
 
-# Pure-shell file copy (no cp needed on bootstrap path)
+# Pure-shell file copy (no cp needed on bootstrap _envm_p)
 _envm_snapshot_save() {
     [ -f "$2" ] || return
     local _l
@@ -151,19 +151,21 @@ _envm_export() { export "$1=$2"; }
 
 # ---------- List operations ----------
 _envm_list_all() {
+    # Declare locals at function top — zsh echoes bare 'local k v' inside
+    # nested while loops (a parser quirk).
+    local id _envm_p line k v
     if [ ! -s "$_ENVM_LOADED" ]; then
         printf "${C_DIM}No environments loaded.${R}\n"
         return
     fi
-    while IFS=$'\t' read -r id path; do
+    while IFS=$'\t' read -r id _envm_p; do
         [ -z "$id" ] && continue
-        printf "${C_NS}[%s]${R} ${C_DIM}%s${R}\n" "$id" "$path"
-        if [ -f "$path" ]; then
+        printf "${C_NS}[%s]${R} ${C_DIM}%s${R}\n" "$id" "$_envm_p"
+        if [ -f "$_envm_p" ]; then
             while IFS= read -r line; do
-                local k v
                 k=$(_envm_k "$line"); v=$(_envm_v "$line")
                 printf "  ${C_KEY}%-35s${R}${C_VAL}%s${R}\n" "$k" "$v"
-            done < <(_envm_parse "$path")
+            done < <(_envm_parse "$_envm_p")
         else
             printf "  ${C_ERR}(file missing)${R}\n"
         fi
@@ -172,34 +174,33 @@ _envm_list_all() {
 }
 
 _envm_list_namespaces() {
+    local id _envm_p count
     printf "${C_DIM}Loaded environments:${R}\n\n"
     if [ ! -s "$_ENVM_LOADED" ]; then
         echo "  (none)"
         return
     fi
-    while IFS=$'\t' read -r id path; do
+    while IFS=$'\t' read -r id _envm_p; do
         [ -z "$id" ] && continue
-        local count=0
-        [ -f "$path" ] && count=$(_envm_parse "$path" | wc -l | tr -d ' ')
-        printf "  ${C_NS}%-15s${R} ${C_DIM}%s${R}  (%s vars)\n" "$id" "$path" "$count"
+        count=0
+        [ -f "$_envm_p" ] && count=$(_envm_parse "$_envm_p" | wc -l | tr -d ' ')
+        printf "  ${C_NS}%-15s${R} ${C_DIM}%s${R}  (%s vars)\n" "$id" "$_envm_p" "$count"
     done < "$_ENVM_LOADED"
     echo ""
 }
 
 _envm_list_ns_vars() {
-    local id="$1"
+    local id="$1" _envm_p line k v
     if ! _envm_ns_exists "$id"; then
         _envm_err_unknown_ns "$id"; return 1
     fi
-    local path
-    path=$(_envm_ns_path "$id")
-    printf "${C_NS}[%s]${R} ${C_DIM}%s${R}\n\n" "$id" "$path"
-    if [ -f "$path" ]; then
+    _envm_p=$(_envm_ns_path "$id")
+    printf "${C_NS}[%s]${R} ${C_DIM}%s${R}\n\n" "$id" "$_envm_p"
+    if [ -f "$_envm_p" ]; then
         while IFS= read -r line; do
-            local k v
             k=$(_envm_k "$line"); v=$(_envm_v "$line")
             printf "  ${C_KEY}%-35s${R}${C_VAL}%s${R}\n" "$k" "$v"
-        done < <(_envm_parse "$path")
+        done < <(_envm_parse "$_envm_p")
     fi
     echo ""
 }
@@ -234,28 +235,29 @@ _envm_detect_conflicts() {
 }
 
 _envm_load() {
-    local path="" id=""
+    # All locals up front to avoid zsh's "echo bare `local x y`" quirk in loops.
+    local _envm_p="" id="" _c conflicts resolution="new" ch pc
+    local k cv src nv cur_disp
+    local line key val conf cur
     while [ $# -gt 0 ]; do
         case "$1" in
             --as) id="$2"; shift 2 ;;
             -*)   printf "${C_ERR}Unknown flag: %s${R}\n" "$1"; return 1 ;;
-            *)    [ -z "$path" ] && path="$1" || { echo "Extra arg: $1"; return 1; }; shift ;;
+            *)    [ -z "$_envm_p" ] && _envm_p="$1" || { echo "Extra arg: $1"; return 1; }; shift ;;
         esac
     done
-    [ -z "$path" ] && { echo "Usage: envm load <path> [--as <id>]"; return 1; }
-    [ -f "$path" ] || { printf "${C_ERR}File not found: %s${R}\n" "$path"; return 1; }
+    [ -z "$_envm_p" ] && { echo "Usage: envm load <path> [--as <id>]"; return 1; }
+    [ -f "$_envm_p" ] || { printf "${C_ERR}File not found: %s${R}\n" "$_envm_p"; return 1; }
 
-    path=$(cd "$(dirname "$path")" 2>/dev/null && pwd)/$(basename "$path")
-    [ -z "$id" ] && id=$(_envm_infer_id "$path")
+    _envm_p=$(cd "$(dirname "$_envm_p")" 2>/dev/null && pwd)/$(basename "$_envm_p")
+    [ -z "$id" ] && id=$(_envm_infer_id "$_envm_p")
 
     if _envm_ns_exists "$id"; then
         printf "Namespace ${C_NS}%s${R} already loaded. Reload? [y/N] " "$id"
         read -r _c; [[ ! "$_c" =~ ^[Yy]$ ]] && { echo "Cancelled."; return 0; }
     fi
 
-    local conflicts
-    conflicts=$(_envm_detect_conflicts "$path" "$id")
-    local resolution="new"
+    conflicts=$(_envm_detect_conflicts "$_envm_p" "$id")
 
     if [ -n "$conflicts" ]; then
         echo ""
@@ -263,8 +265,8 @@ _envm_load() {
         printf "  ${C_KEY}%-20s${R}  ${C_OLD}%-34s${R}  ${C_NEW}%s${R}\n" "KEY" "CURRENT (source)" "NEW ($id)"
         printf "  ${C_DIM}%-20s  %-34s  %s${R}\n" "-------" "----------------" "---"
         while IFS=$'\t' read -r k cv src nv; do
-            local cd="$cv (${src})"
-            printf "  ${C_KEY}%-20s${R}  ${C_OLD}%-34s${R}  ${C_NEW}%s${R}\n" "$k" "$cd" "$nv"
+            cur_disp="$cv (${src})"
+            printf "  ${C_KEY}%-20s${R}  ${C_OLD}%-34s${R}  ${C_NEW}%s${R}\n" "$k" "$cur_disp" "$nv"
         done <<< "$conflicts"
         echo ""
         echo "  [1] Keep all current values"
@@ -282,7 +284,6 @@ _envm_load() {
     fi
 
     # Apply
-    local line key val conf cur
     while IFS= read -r line; do
         [ -z "$line" ] && continue
         key=$(_envm_k "$line"); val=$(_envm_v "$line")
@@ -303,11 +304,11 @@ _envm_load() {
         else
             _envm_export "$key" "$val"
         fi
-    done < <(_envm_parse "$path")
+    done < <(_envm_parse "$_envm_p")
 
-    _envm_snapshot_save "$id" "$path"
-    _envm_ns_add "$id" "$path"
-    printf "\n${C_NEW}Loaded${R} ${C_NS}%s${R} from %s\n" "$id" "$path"
+    _envm_snapshot_save "$id" "$_envm_p"
+    _envm_ns_add "$id" "$_envm_p"
+    printf "\n${C_NEW}Loaded${R} ${C_NS}%s${R} from %s\n" "$id" "$_envm_p"
 }
 
 # ---------- Unload ----------
@@ -318,19 +319,22 @@ _envm_load() {
 #     excluding self; first match wins)
 #   - current value == snapshot value, and nothing else has it → unset
 _envm_unload() {
+    # All locals up front — zsh echoes bare `local x y` declarations inside
+    # nested while loops (parser quirk), so keep them out of loop bodies.
     local id="${1:-default}"
+    local _envm_p snap unset_n=0 skip_n=0 restore_n=0
+    local line key val cur c
+    local restored prev_id prev_p prev_snap prev_val
     if ! _envm_ns_exists "$id"; then
         _envm_err_unknown_ns "$id"; return 1
     fi
-    local path snap
-    path=$(_envm_ns_path "$id")
+    _envm_p=$(_envm_ns_path "$id")
     snap=$(_envm_snapshot_file "$id")
 
-    printf "Unload ${C_NS}%s${R} (%s)?\n" "$id" "$path"
+    printf "Unload ${C_NS}%s${R} (%s)?\n" "$id" "$_envm_p"
     printf "Restores each variable from the most recent remaining namespace that had it,\nor unsets if none. Values you overwrote manually are skipped. [y/N] "
     read -r c; [[ ! "$c" =~ ^[Yy]$ ]] && { echo "Cancelled."; return 0; }
 
-    local unset_n=0 skip_n=0 restore_n=0 line key val cur
     if [ -f "$snap" ]; then
         while IFS= read -r line; do
             [ -z "$line" ] && continue
@@ -343,8 +347,8 @@ _envm_unload() {
             fi
             # Current value is ours — look for a previous owner to restore from.
             # Walk loaded list in reverse (awk for portability), excluding self.
-            local restored=false prev_id prev_path prev_snap prev_val
-            while IFS=$'\t' read -r prev_id prev_path; do
+            restored=false
+            while IFS=$'\t' read -r prev_id prev_p; do
                 [ -z "$prev_id" ] || [ "$prev_id" = "$id" ] && continue
                 prev_snap=$(_envm_snapshot_file "$prev_id")
                 [ -f "$prev_snap" ] || continue
@@ -376,9 +380,9 @@ _envm_show() {
     local key="$1" ns="$2"
     if [ -n "$ns" ]; then
         _envm_ns_exists "$ns" || { _envm_err_unknown_ns "$ns"; return 1; }
-        local path val
-        path=$(_envm_ns_path "$ns")
-        val=$(_envm_file_get "$key" "$path")
+        local _envm_p val
+        _envm_p=$(_envm_ns_path "$ns")
+        val=$(_envm_file_get "$key" "$_envm_p")
         if [ -n "$val" ]; then
             printf "${C_NS}[%s]${R} ${C_KEY}%s${R}=${C_VAL}%s${R}\n" "$ns" "$key" "$val"
         else
@@ -397,28 +401,28 @@ _envm_show() {
 
 _envm_set() {
     local key="$1" val="$2" ns="$3"
-    local path resolved_ns
+    local _envm_p resolved_ns
     if [ -n "$ns" ]; then
         _envm_ns_exists "$ns" || { _envm_err_unknown_ns "$ns"; return 1; }
-        path=$(_envm_ns_path "$ns"); resolved_ns="$ns"
+        _envm_p=$(_envm_ns_path "$ns"); resolved_ns="$ns"
     else
-        path="$_ENVM_FILE"
-        [ ! -f "$path" ] && { mkdir -p "$(dirname "$path")"; : > "$path"; }
+        _envm_p="$_ENVM_FILE"
+        [ ! -f "$_envm_p" ] && { mkdir -p "$(dirname "$_envm_p")"; : > "$_envm_p"; }
         resolved_ns="default"
-        _envm_ns_exists "$resolved_ns" || _envm_ns_add "$resolved_ns" "$path"
+        _envm_ns_exists "$resolved_ns" || _envm_ns_add "$resolved_ns" "$_envm_p"
     fi
 
     local existing
-    existing=$(_envm_file_get "$key" "$path")
+    existing=$(_envm_file_get "$key" "$_envm_p")
     if [ -n "$existing" ]; then
         printf "Current in ${C_NS}%s${R}: ${C_KEY}%s${R}=${C_OLD}%s${R}\n" "$resolved_ns" "$key" "$existing"
         printf "Replace with '%s'? [y/N] " "$val"
         read -r c; [[ ! "$c" =~ ^[Yy]$ ]] && { echo "Cancelled."; return 0; }
-        sed -i "s|^export ${key}=.*|export ${key}=${val}|" "$path"
+        sed -i "s|^export ${key}=.*|export ${key}=${val}|" "$_envm_p"
     else
-        echo "export ${key}=${val}" >> "$path"
+        echo "export ${key}=${val}" >> "$_envm_p"
     fi
-    _envm_snapshot_save "$resolved_ns" "$path"
+    _envm_snapshot_save "$resolved_ns" "$_envm_p"
     _envm_export "$key" "$val"
     local action="Added"
     [ -n "$existing" ] && action="Updated"
@@ -427,15 +431,15 @@ _envm_set() {
 
 _envm_delete() {
     local key="$1" ns="$2"
-    local path resolved_ns
+    local _envm_p resolved_ns
     if [ -n "$ns" ]; then
         _envm_ns_exists "$ns" || { _envm_err_unknown_ns "$ns"; return 1; }
-        path=$(_envm_ns_path "$ns"); resolved_ns="$ns"
+        _envm_p=$(_envm_ns_path "$ns"); resolved_ns="$ns"
     else
-        path="$_ENVM_FILE"; resolved_ns="default"
+        _envm_p="$_ENVM_FILE"; resolved_ns="default"
     fi
     local existing
-    existing=$(_envm_file_get "$key" "$path")
+    existing=$(_envm_file_get "$key" "$_envm_p")
     if [ -z "$existing" ]; then
         printf "${C_ERR}Not found in %s: %s${R}\n" "$resolved_ns" "$key"; return 1
     fi
@@ -443,8 +447,8 @@ _envm_delete() {
     printf "Confirm? [y/N] "
     read -r c
     if [[ "$c" =~ ^[Yy]$ ]]; then
-        sed -i "/^export $key=/d" "$path"
-        _envm_snapshot_save "$resolved_ns" "$path"
+        sed -i "/^export $key=/d" "$_envm_p"
+        _envm_snapshot_save "$resolved_ns" "$_envm_p"
         unset "$key"
         printf "Deleted from %s: %s\n" "$resolved_ns" "$key"
     else
@@ -465,8 +469,8 @@ envm — multi-namespace environment variable manager
   envm -e <id> KEY [VALUE]   show/set in a specific namespace
   envm -d KEY                delete KEY from default namespace
   envm -d -e <id> KEY        delete KEY from a specific namespace
-  envm load <path>           load a .env file as a new namespace
-  envm load <path> --as <id> load with an explicit namespace id
+  envm load <_envm_p>           load a .env file as a new namespace
+  envm load <_envm_p> --as <id> load with an explicit namespace id
   envm unload                unload the default namespace
   envm unload -e <id>        unload a specific namespace
   envm -h                    show this help
@@ -474,7 +478,7 @@ envm — multi-namespace environment variable manager
 
 Default .env:   $_ENVM_FILE
 State dir:      $_ENVM_STATE
-Override dir:   ENVM_DIR=/some/path envm ...
+Override dir:   ENVM_DIR=/some/_envm_p envm ...
 
 https://github.com/rw3iss/envm
 EOF
@@ -536,11 +540,11 @@ _envm_bootstrap() {
     fi
     # Source each registered namespace's file
     if [ -s "$_ENVM_LOADED" ]; then
-        local id path
-        while IFS=$'\t' read -r id path; do
+        local id _envm_p
+        while IFS=$'\t' read -r id _envm_p; do
             [ -z "$id" ] && continue
             # shellcheck disable=SC1090
-            [ -f "$path" ] && . "$path" 2>/dev/null
+            [ -f "$_envm_p" ] && . "$_envm_p" 2>/dev/null
         done < "$_ENVM_LOADED"
     fi
     # Prune orphan snapshots — skip silently if rm isn't reachable

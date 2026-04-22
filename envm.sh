@@ -16,12 +16,24 @@ _envm_setup() {
     else
         hash -r 2>/dev/null
     fi
+    # Pure-shell config parse (no grep/head/cut/tr) so bootstrap works even if
+    # coreutils aren't reachable on startup.
     local config="$HOME/.envm/config"
     local dir=""
     if [ -n "${ENVM_DIR:-}" ]; then
         dir="$ENVM_DIR"
     elif [ -f "$config" ]; then
-        dir=$(grep '^ENVM_DIR=' "$config" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'")
+        local _l
+        while IFS= read -r _l; do
+            case "$_l" in
+                'ENVM_DIR='*)
+                    dir="${_l#ENVM_DIR=}"
+                    dir="${dir#\"}"; dir="${dir%\"}"
+                    dir="${dir#\'}"; dir="${dir%\'}"
+                    break
+                    ;;
+            esac
+        done < "$config"
     fi
     _ENVM_DIR="${dir:-$HOME}"
     _ENVM_DIR="${_ENVM_DIR/#\~/$HOME}"
@@ -29,8 +41,11 @@ _envm_setup() {
     _ENVM_STATE="$HOME/.envm"
     _ENVM_LOADED="$_ENVM_STATE/loaded"
     _ENVM_SNAPSHOTS="$_ENVM_STATE/snapshots"
-    mkdir -p "$_ENVM_STATE" "$_ENVM_SNAPSHOTS" 2>/dev/null
-    [ ! -f "$_ENVM_LOADED" ] && : > "$_ENVM_LOADED"
+    # Only try to create dirs if mkdir is reachable (usually pre-existing anyway)
+    if [ ! -d "$_ENVM_STATE" ] || [ ! -d "$_ENVM_SNAPSHOTS" ]; then
+        command -v mkdir >/dev/null 2>&1 && mkdir -p "$_ENVM_STATE" "$_ENVM_SNAPSHOTS" 2>/dev/null
+    fi
+    [ ! -f "$_ENVM_LOADED" ] && : > "$_ENVM_LOADED" 2>/dev/null
 
     # Colors
     R=$'\033[0m'
@@ -43,19 +58,49 @@ _envm_setup() {
     C_NS=$'\033[1;34m'
 }
 
-# ---------- Namespace registry helpers ----------
-_envm_ns_exists() { grep -q "^$1	" "$_ENVM_LOADED" 2>/dev/null; }
-_envm_ns_path()   { awk -F'\t' -v id="$1" '$1==id {print $2; exit}' "$_ENVM_LOADED" 2>/dev/null; }
-_envm_ns_ids()    { awk -F'\t' '{print $1}' "$_ENVM_LOADED" 2>/dev/null; }
-_envm_ns_add()    {
+# ---------- Namespace registry helpers (pure-shell — no coreutils needed) ----------
+# These run in the bootstrap path, so they must not depend on grep/awk/sed/mv/rm
+# in case the user's PATH is temporarily missing /usr/bin on shell start.
+_envm_ns_exists() {
+    [ -f "$_ENVM_LOADED" ] || return 1
+    local _l
+    while IFS= read -r _l; do
+        [ "${_l%%	*}" = "$1" ] && return 0
+    done < "$_ENVM_LOADED"
+    return 1
+}
+_envm_ns_path() {
+    [ -f "$_ENVM_LOADED" ] || return
+    local _l
+    while IFS= read -r _l; do
+        if [ "${_l%%	*}" = "$1" ]; then
+            printf '%s\n' "${_l#*	}"
+            return
+        fi
+    done < "$_ENVM_LOADED"
+}
+_envm_ns_ids() {
+    [ -f "$_ENVM_LOADED" ] || return
+    local _l
+    while IFS= read -r _l; do
+        [ -z "$_l" ] && continue
+        printf '%s\n' "${_l%%	*}"
+    done < "$_ENVM_LOADED"
+}
+_envm_ns_add() {
     _envm_ns_remove "$1"
-    printf "%s\t%s\n" "$1" "$2" >> "$_ENVM_LOADED"
+    printf '%s\t%s\n' "$1" "$2" >> "$_ENVM_LOADED"
 }
 _envm_ns_remove() {
     [ -f "$_ENVM_LOADED" ] || return
-    local tmp="$_ENVM_LOADED.tmp.$$"
-    grep -v "^$1	" "$_ENVM_LOADED" > "$tmp" 2>/dev/null || : > "$tmp"
-    mv "$tmp" "$_ENVM_LOADED"
+    local _l _content=""
+    while IFS= read -r _l; do
+        [ -z "$_l" ] && continue
+        [ "${_l%%	*}" = "$1" ] && continue
+        _content="${_content}${_l}
+"
+    done < "$_ENVM_LOADED"
+    printf '%s' "$_content" > "$_ENVM_LOADED"
 }
 
 _envm_infer_id() {
@@ -75,8 +120,16 @@ _envm_infer_id() {
     fi
 }
 
-_envm_snapshot_save() { cp "$2" "$_ENVM_SNAPSHOTS/$1.env" 2>/dev/null; }
-_envm_snapshot_file() { echo "$_ENVM_SNAPSHOTS/$1.env"; }
+# Pure-shell file copy (no cp needed on bootstrap path)
+_envm_snapshot_save() {
+    [ -f "$2" ] || return
+    local _l
+    : > "$_ENVM_SNAPSHOTS/$1.env"
+    while IFS= read -r _l || [ -n "$_l" ]; do
+        printf '%s\n' "$_l" >> "$_ENVM_SNAPSHOTS/$1.env"
+    done < "$2"
+}
+_envm_snapshot_file() { printf '%s\n' "$_ENVM_SNAPSHOTS/$1.env"; }
 
 # ---------- File parsing ----------
 # Output lines of KEY=VALUE (strips the "export " prefix).
@@ -490,13 +543,14 @@ _envm_bootstrap() {
             [ -f "$path" ] && . "$path" 2>/dev/null
         done < "$_ENVM_LOADED"
     fi
-    # Prune orphan snapshots (ids with no matching entry in loaded list)
-    if [ -d "$_ENVM_SNAPSHOTS" ]; then
+    # Prune orphan snapshots — skip silently if rm isn't reachable
+    if command -v rm >/dev/null 2>&1 && [ -d "$_ENVM_SNAPSHOTS" ]; then
         local snap snap_id
         for snap in "$_ENVM_SNAPSHOTS"/*.env; do
             [ -f "$snap" ] || continue
-            snap_id=$(basename "$snap" .env)
-            _envm_ns_exists "$snap_id" || rm -f "$snap"
+            snap_id="${snap##*/}"       # pure-shell basename
+            snap_id="${snap_id%.env}"   # strip .env suffix
+            _envm_ns_exists "$snap_id" || rm -f "$snap" 2>/dev/null
         done
     fi
 }

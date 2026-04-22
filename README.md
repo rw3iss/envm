@@ -134,17 +134,36 @@ Choice [1]: 1
 Loaded prod from /home/user/projects/prod/.env
 ```
 
-### Safe unload
+### Safe unload with restore
 
-Unloading only unsets variables whose current shell value still matches what was loaded — if you (or another namespace) overwrote a value, it's skipped:
+Unloading walks each variable in the namespace's snapshot and does the right thing based on the current shell value:
+
+| Situation | Action |
+|-----------|--------|
+| current value ≠ snapshot value | **Skip** — you (or another namespace) overwrote it; don't touch |
+| current = snapshot, and another loaded namespace has this key | **Restore** — use the value from the most recently-loaded remaining namespace that has it |
+| current = snapshot, and no other namespace has it | **Unset** |
+
+Example stacking behavior:
+
+```
+envm load ~/proj-a/.env     # A: KEY=a
+envm load ~/proj-b/.env     # B: KEY=b   (shell now has KEY=b)
+envm unload -e proj-b       # → restored from A, KEY=a again
+envm unload                 # → default had no KEY, so unset
+```
+
+Transcript:
 
 ```bash
 $ envm unload -e staging
 Unload staging (/home/user/projects/staging/.env)?
-Unsets each variable from this namespace only if its current value still matches
-what was loaded (overwritten values are skipped). [y/N] y
-Unloaded staging: 3 unset (2 skipped — overwritten)
+Restores each variable from the most recent remaining namespace that had it,
+or unsets if none. Values you overwrote manually are skipped. [y/N] y
+Unloaded staging: 2 unset, 3 restored, 1 skipped (overwritten)
 ```
+
+The order of restore lookup comes directly from `~/.envm/loaded` — later entries are newer, and we walk bottom-up when searching for a previous owner.
 
 ### Unknown namespace
 

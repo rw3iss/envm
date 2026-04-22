@@ -258,6 +258,12 @@ _envm_load() {
 }
 
 # ---------- Unload ----------
+# For each var in the unloading namespace's snapshot:
+#   - current value != snapshot value  → skip (overwritten, don't touch)
+#   - current value == snapshot value, and another loaded namespace has this
+#     key in its snapshot → restore that value (walk loaded list in reverse,
+#     excluding self; first match wins)
+#   - current value == snapshot value, and nothing else has it → unset
 _envm_unload() {
     local id="${1:-default}"
     if ! _envm_ns_exists "$id"; then
@@ -268,27 +274,47 @@ _envm_unload() {
     snap=$(_envm_snapshot_file "$id")
 
     printf "Unload ${C_NS}%s${R} (%s)?\n" "$id" "$path"
-    printf "Unsets each variable from this namespace only if its current value still matches\nwhat was loaded (overwritten values are skipped). [y/N] "
+    printf "Restores each variable from the most recent remaining namespace that had it,\nor unsets if none. Values you overwrote manually are skipped. [y/N] "
     read -r c; [[ ! "$c" =~ ^[Yy]$ ]] && { echo "Cancelled."; return 0; }
 
-    local unset_n=0 skip_n=0 line key val cur
+    local unset_n=0 skip_n=0 restore_n=0 line key val cur
     if [ -f "$snap" ]; then
         while IFS= read -r line; do
             [ -z "$line" ] && continue
             key=$(_envm_k "$line"); val=$(_envm_v "$line")
             _envm_is_set "$key" || continue
             cur=$(_envm_cur "$key")
-            if [ "$cur" = "$val" ]; then
-                unset "$key"; unset_n=$((unset_n+1))
-            else
+            if [ "$cur" != "$val" ]; then
                 skip_n=$((skip_n+1))
+                continue
+            fi
+            # Current value is ours — look for a previous owner to restore from.
+            # Walk loaded list in reverse (awk for portability), excluding self.
+            local restored=false prev_id prev_path prev_snap prev_val
+            while IFS=$'\t' read -r prev_id prev_path; do
+                [ -z "$prev_id" ] || [ "$prev_id" = "$id" ] && continue
+                prev_snap=$(_envm_snapshot_file "$prev_id")
+                [ -f "$prev_snap" ] || continue
+                prev_val=$(_envm_file_get "$key" "$prev_snap")
+                if [ -n "$prev_val" ]; then
+                    _envm_export "$key" "$prev_val"
+                    restored=true
+                    break
+                fi
+            done < <(awk '{a[NR]=$0} END{for(i=NR;i>0;i--) print a[i]}' "$_ENVM_LOADED")
+            if $restored; then
+                restore_n=$((restore_n+1))
+            else
+                unset "$key"
+                unset_n=$((unset_n+1))
             fi
         done < <(_envm_parse "$snap")
     fi
     _envm_ns_remove "$id"
     rm -f "$snap"
     printf "Unloaded ${C_NS}%s${R}: %d unset" "$id" "$unset_n"
-    [ "$skip_n" -gt 0 ] && printf " (%d skipped — overwritten)" "$skip_n"
+    [ "$restore_n" -gt 0 ] && printf ", %d restored" "$restore_n"
+    [ "$skip_n"    -gt 0 ] && printf ", %d skipped (overwritten)" "$skip_n"
     echo ""
 }
 

@@ -48,6 +48,9 @@ envm load <file>           load a .env file as a new namespace
 envm load <file> --as <id> load with an explicit namespace id
 envm unload                unload the default namespace
 envm unload -e <id>        unload a specific namespace
+envm -f <query>            search keys for <query> across all loaded namespaces
+envm -f <query> -e <id>    search keys in a specific namespace
+envm -f <query> -v         search values instead of keys (works with -e too)
 envm -h                    show help
 envm uninstall             uninstall envm
 ```
@@ -92,6 +95,35 @@ $ envm -e staging
 
   DB_HOST                    staging.db.internal
   API_KEY                    xyz789
+```
+
+### Searching
+
+Case-insensitive substring match across currently-loaded namespaces. By default it searches **keys**; add `-v` to search **values** instead. Combine with `-e <id>` to scope to one namespace.
+
+```bash
+# Find every key containing "token" across all namespaces
+$ envm -f token
+Searching keys for 'token'
+
+[default] /home/user/.env
+  GH_TOKEN                           ghp_xxxxxxxxxxxxxxxxxxxx
+  K6_CLOUD_TOKEN                     glc_xxxxxxxxxxxxxxxxxxxx
+
+2 match(es).
+
+# Find values containing "/usr" (e.g., anything pointing at system paths)
+$ envm -f /usr -v
+Searching values for '/usr'
+
+[default] /home/user/.env
+  JAVA_HOME                          /usr/share
+  CMAKE_CXX_COMPILER                 /usr/bin/g++
+
+2 match(es).
+
+# Search within a specific namespace only
+$ envm -f DB -e staging
 ```
 
 ### Writing to a specific namespace

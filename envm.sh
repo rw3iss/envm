@@ -456,6 +456,58 @@ _envm_delete() {
     fi
 }
 
+# ---------- Search ----------
+# Find keys (or values with -v) whose value contains the query substring.
+# Case-insensitive. Scoped to a single namespace with -e <id>, otherwise
+# searches across all loaded namespaces.
+_envm_find() {
+    local query="$1" ns="$2" search_vals="$3"
+    local id _envm_p line k v target ltarget lquery
+    local total=0 header_shown label
+    lquery=$(printf '%s' "$query" | tr '[:upper:]' '[:lower:]')
+
+    if [ -n "$ns" ] && ! _envm_ns_exists "$ns"; then
+        _envm_err_unknown_ns "$ns"; return 1
+    fi
+
+    label="keys"
+    [ "$search_vals" = "true" ] && label="values"
+    printf "${C_DIM}Searching %s for '%s'%s${R}\n\n" "$label" "$query" "${ns:+ (in [$ns])}"
+
+    while IFS=$'\t' read -r id _envm_p; do
+        [ -z "$id" ] && continue
+        [ -n "$ns" ] && [ "$id" != "$ns" ] && continue
+        [ ! -f "$_envm_p" ] && continue
+        header_shown=false
+        while IFS= read -r line; do
+            k=$(_envm_k "$line"); v=$(_envm_v "$line")
+            if [ "$search_vals" = "true" ]; then
+                target="$v"
+            else
+                target="$k"
+            fi
+            ltarget=$(printf '%s' "$target" | tr '[:upper:]' '[:lower:]')
+            case "$ltarget" in
+                *"$lquery"*)
+                    if [ "$header_shown" = false ]; then
+                        printf "${C_NS}[%s]${R} ${C_DIM}%s${R}\n" "$id" "$_envm_p"
+                        header_shown=true
+                    fi
+                    printf "  ${C_KEY}%-35s${R}${C_VAL}%s${R}\n" "$k" "$v"
+                    total=$((total + 1))
+                    ;;
+            esac
+        done < <(_envm_parse "$_envm_p")
+        [ "$header_shown" = true ] && echo ""
+    done < "$_ENVM_LOADED"
+
+    if [ "$total" -eq 0 ]; then
+        printf "${C_DIM}No matches.${R}\n"
+    else
+        printf "${C_DIM}%d match(es).${R}\n" "$total"
+    fi
+}
+
 # ---------- Help / Uninstall ----------
 _envm_help() {
     cat <<EOF
@@ -473,6 +525,9 @@ envm — multi-namespace environment variable manager
   envm load <file> --as <id> load with an explicit namespace id
   envm unload                unload the default namespace
   envm unload -e <id>        unload a specific namespace
+  envm -f <query>            search keys for <query> across all namespaces
+  envm -f <query> -e <id>    search keys in a specific namespace
+  envm -f <query> -v         search values instead of keys
   envm -h                    show this help
   envm uninstall             uninstall envm
 
@@ -505,15 +560,32 @@ envm() {
         _envm_list_namespaces; return
     fi
 
-    # Extract -e <id> (anywhere in the arg list)
-    local _ns="" _args=()
+    # Extract flags: -e <id>, -v (values), -f <query> (find); all order-agnostic
+    local _ns="" _search_vals=false _query="" _is_find=false _args=()
     while [ $# -gt 0 ]; do
         if [ "$1" = "-e" ] && [ $# -ge 2 ] && [ "${2:0:1}" != "-" ]; then
             _ns="$2"; shift 2
+        elif [ "$1" = "-v" ]; then
+            _search_vals=true; shift
+        elif [ "$1" = "-f" ]; then
+            if [ $# -ge 2 ]; then
+                _is_find=true; _query="$2"; shift 2
+            else
+                echo "Usage: envm -f <query> [-e <id>] [-v]"; return 1
+            fi
         else
             _args+=("$1"); shift
         fi
     done
+
+    if $_is_find; then
+        _envm_find "$_query" "$_ns" "$_search_vals"
+        return
+    fi
+    if $_search_vals; then
+        echo "-v is only valid with -f <query>"; return 1
+    fi
+
     if [ "${#_args[@]}" -gt 0 ]; then set -- "${_args[@]}"; else set --; fi
 
     case "$1" in
